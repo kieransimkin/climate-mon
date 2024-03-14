@@ -6,7 +6,7 @@
 #include <HTTPClient.h>
 #include <SPI.h>
 #include <Wire.h>
-
+#include <ArduinoUniqueID.h>
 #include <Wire.h>
 #include "SparkFun_SCD4x_Arduino_Library.h" //Click here to get the library: http://librarymanager/All#SparkFun_SCD4x
 
@@ -22,47 +22,27 @@
 #include <WebServer.h>
 #include <arduino-timer.h>
 
+#define TYPE_TEMP 0
+#define TYPE_HUMID 1
+#define TYPE_CO2 2
+#define TYPE_PRES 3
+#define TYPE_REF_ALT 4
+#define TYPE_REF_OFFSET 5
+#define TYPE_SENSOR 6
+#define TYPE_SERIAL 7
 
-// OLED FeatherWing buttons map to different pins depending on board.
-// The I2C (Wire) bus may also be different.
-#if defined(ESP8266)
-  #define BUTTON_A  0
-  #define BUTTON_B 16
-  #define BUTTON_C  2
-  #define WIRE Wire
-#elif defined(ESP32)
-  #define BUTTON_A 15
-  #define BUTTON_B 32
-  #define BUTTON_C 14
-  #define WIRE Wire
-#elif defined(ARDUINO_STM32_FEATHER)
-  #define BUTTON_A PA15
-  #define BUTTON_B PC7
-  #define BUTTON_C PC5
-  #define WIRE Wire
-#elif defined(TEENSYDUINO)
-  #define BUTTON_A  4
-  #define BUTTON_B  3
-  #define BUTTON_C  8
-  #define WIRE Wire
-#elif defined(ARDUINO_FEATHER52832)
-  #define BUTTON_A 31
-  #define BUTTON_B 30
-  #define BUTTON_C 27
-  #define WIRE Wire
-#elif defined(ARDUINO_ADAFRUIT_FEATHER_RP2040)
-  #define BUTTON_A  9
-  #define BUTTON_B  8
-  #define BUTTON_C  7
-  #define WIRE Wire1
-#else // 32u4, M0, M4, nrf52840 and 328p
-  #define BUTTON_A  9
-  #define BUTTON_B  6
-  #define BUTTON_C  5
-  #define WIRE Wire
-#endif
+#define UNIT_CELSIUS 0
+#define UNIT_FAHRENHEIT 1
+#define UNIT_PERCENT 2
+#define UNIT_PPM 3
+#define UNIT_METERS 4
+#define UNIT_FEET 5
+#define UNIT_SENSOR 6
+#define UNIT_SERIAL 7
+#define UNIT_HZ 8
+#define UNIT_DB 9
 
-Adafruit_SSD1306 display = Adafruit_SSD1306(128, 32, &WIRE);
+Adafruit_SSD1306 display = Adafruit_SSD1306(128, 32, &Wire);
 
 SCD4x mySensor;
 DHT11 dht11(4);
@@ -71,21 +51,229 @@ int dht11Humidity = 0;
 int readDHT11 = 0;
 int services = 0;
 auto timer = timer_create_default();
+int openLogRequest(WiFiClient &client) { 
+  int c = 0;
+    int connected = 0;
+    
+    for (int c = 0; c < services; c++) { 
+      
+    
+      if (client.connect(MDNS.IP(c), MDNS.port(c))) { 
+        connected = 1;
+        break;
+      }
+      yield();
+    }
+    if (connected == 0) { 
+        Serial.println("Connection failed."); 
+        Serial.print("IP: "); 
+        Serial.print(MDNS.IP(c));
+        Serial.println();
+        Serial.print("Port: ");
+        Serial.print(MDNS.port(c));
+        Serial.println();
+        client.stop();
+        return 0;
+    } else { return 1; }
+}
+void addHeaders(WiFiClient &client) { 
+ client.print(" HTTP/1.0\r\nX-UID: ");
+    for (size_t i = 0; i < UniqueIDsize; i++) {
+		  if (UniqueID[i] < 0x10)
+			  client.print("0");
+		  client.print(UniqueID[i], HEX);
+	  }
+    client.print("\r\n\r\n");
+}
+int awaitReply(WiFiClient &client) { 
+  int maxloops = 0;
+
+  //wait for the server's reply to become available
+  while (!client.available() && maxloops < 1000)
+  {
+    maxloops++;
+    delay(1); //delay 1 msec
+    yield();
+  }
+  if (client.available() > 0)
+  {
+    //read back one line from the server
+    // Ugh using String, might just read one byte at a time into a char[3] until we've got a status code
+     String line = client.readStringUntil('\r');
+    
+     yield();
+    //Serial.println(line);
+    return true;
+  }
+  else
+  {
+    Serial.println("client.available() timed out ");
+    return false;
+  }
+}    void fail(WiFiClient &client) { 
+      Serial.println("Failed to send sensor val, we should probably be discover mdns");
+      client.stop();
+    }
+
+void sendQuery(WiFiClient &client,uint32_t readingType, uint32_t readingUnit, uint16_t sensorIndex, int8_t exponent=0) { 
+    client.print("GET /log?type=");
+    client.printf("%u",readingType);
+    client.print("&unit=");
+    client.printf("%u",readingUnit);
+    client.print("&idx=");
+    client.printf("%u",sensorIndex);
+    client.print("&exp=");
+    client.printf("%i",exponent);
+    client.print("&val=");
+}
+void uploadSensorVal(uint32_t readingType, uint32_t readingUnit, uint16_t sensorIndex, float val, int8_t exponent=0) { 
+    WiFiClient client;
+    if (!openLogRequest(client)) return fail(client);
+    sendQuery(client,readingType,readingUnit,sensorIndex,exponent);
+    client.printf("%f",val);
+    client.print("&ctype=float");
+    addHeaders(client);
+    if (!awaitReply(client)) return fail(client);
+    client.stop();
+}
+
+void uploadSensorVal(uint32_t readingType, uint32_t readingUnit, uint16_t sensorIndex, double val, int8_t exponent=0) { 
+    WiFiClient client;
+    if (!openLogRequest(client)) return fail(client);
+    sendQuery(client,readingType,readingUnit,sensorIndex,exponent);
+    client.printf("%lf",val);
+    client.print("&ctype=double");
+    addHeaders(client);
+    if (!awaitReply(client)) return fail(client);
+    client.stop();
+}
+// 8 bit ints:
+void uploadSensorVal(uint32_t readingType, uint32_t readingUnit, uint16_t sensorIndex, uint8_t val, int8_t exponent=0) { 
+    WiFiClient client;
+    if (!openLogRequest(client)) return fail(client);
+    sendQuery(client,readingType,readingUnit,sensorIndex,exponent);
+    client.printf("%u",val);
+    client.print("&ctype=uint8");
+    addHeaders(client);
+    if (!awaitReply(client)) return fail(client);
+    client.stop();
+}
+
+void uploadSensorVal(uint32_t readingType, uint32_t readingUnit, uint16_t sensorIndex, int8_t val, int8_t exponent=0) { 
+    WiFiClient client;
+    if (!openLogRequest(client)) return fail(client);
+    sendQuery(client,readingType,readingUnit,sensorIndex,exponent);
+    client.printf("%i",val);
+    client.print("&ctype=int8");
+    addHeaders(client);
+    if (!awaitReply(client)) return fail(client);
+    client.stop();
+}
+// 16 bit ints:
+void uploadSensorVal(uint32_t readingType, uint32_t readingUnit, uint16_t sensorIndex, uint16_t val, int8_t exponent=0) { 
+    WiFiClient client;
+    if (!openLogRequest(client)) return fail(client);
+    sendQuery(client,readingType,readingUnit,sensorIndex,exponent);
+    client.printf("%u",val);
+    client.print("&ctype=uint16");
+    addHeaders(client);
+    if (!awaitReply(client)) return fail(client);
+    client.stop();
+}
+
+void uploadSensorVal(uint32_t readingType, uint32_t readingUnit, uint16_t sensorIndex, int16_t val, int8_t exponent=0) { 
+    WiFiClient client;
+    if (!openLogRequest(client)) return fail(client);
+    sendQuery(client,readingType,readingUnit,sensorIndex,exponent);
+    client.printf("%i",val);
+    client.print("&ctype=int16");
+    addHeaders(client);
+    if (!awaitReply(client)) return fail(client);
+    client.stop();
+}
+// 32 bit ints: 
+void uploadSensorVal(uint32_t readingType, uint32_t readingUnit, uint16_t sensorIndex, uint32_t val, int8_t exponent=0) { 
+    WiFiClient client;
+    if (!openLogRequest(client)) return fail(client);
+    sendQuery(client,readingType,readingUnit,sensorIndex,exponent);
+    client.printf("%u",val);
+    client.print("&ctype=uint32");
+    addHeaders(client);
+    if (!awaitReply(client)) return fail(client);
+    client.stop();
+}
+
+void uploadSensorVal(uint32_t readingType, uint32_t readingUnit, uint16_t sensorIndex, int32_t val, int8_t exponent=0) { 
+    WiFiClient client;
+    if (!openLogRequest(client)) return fail(client);
+    sendQuery(client,readingType,readingUnit,sensorIndex,exponent);
+    client.printf("%i",val);
+    client.print("&ctype=int32");
+    addHeaders(client);
+    if (!awaitReply(client)) return fail(client);
+    client.stop();
+}
+// 64 bit ints:
+void uploadSensorVal(uint32_t readingType, uint32_t readingUnit, uint16_t sensorIndex, uint64_t val, int8_t exponent=0) { 
+    WiFiClient client;
+    if (!openLogRequest(client)) return fail(client);
+    sendQuery(client,readingType,readingUnit,sensorIndex,exponent);
+    client.printf("%u",val);
+    client.print("&ctype=uint64");
+    addHeaders(client);
+    if (!awaitReply(client)) return fail(client);
+    client.stop();
+}
+
+void uploadSensorVal(uint32_t readingType, uint32_t readingUnit, uint16_t sensorIndex, int64_t val, int8_t exponent=0) { 
+    WiFiClient client;
+    if (!openLogRequest(client)) return fail(client);
+    sendQuery(client,readingType,readingUnit,sensorIndex,exponent);
+    client.printf("%i",val);
+    client.print("&ctype=int64");
+    addHeaders(client);
+    if (!awaitReply(client)) return fail(client);
+    client.stop();
+}
+
+// String:
+void uploadSensorVal(uint32_t readingType, uint32_t readingUnit, uint16_t sensorIndex, char *val, int8_t exponent=0) { 
+    WiFiClient client;
+    if (!openLogRequest(client)) return fail(client);
+    sendQuery(client,readingType,readingUnit,sensorIndex,exponent);
+    client.printf("%s",val);
+    client.print("&ctype=string");
+    addHeaders(client);
+    if (!awaitReply(client)) return fail(client);
+    client.stop();
+}
 void setup() {
   
   
     Serial.begin(115200);
+  
 Wire.begin();
     Serial.println();
     Serial.println();
-    Serial.println();
+    Serial.println("\n");
+Serial.flush();
 
     for(uint8_t t = 4; t > 0; t--) {
         Serial.printf("[SETUP] WAIT %d...\n", t);
         Serial.flush();
         delay(1000);
     }
-    
+  
+    Serial.print("UniqueID: ");
+	for (size_t i = 0; i < UniqueIDsize; i++)
+	{
+		if (UniqueID[i] < 0x10)
+			Serial.print("0");
+		Serial.print(UniqueID[i], HEX);
+		
+	}
+	Serial.println();
+  
 
   setESPAutoWiFiConfigDebugOut(Serial); // turns on debug output for the ESPAutoWiFiConfig code
 
@@ -123,24 +311,28 @@ Wire.begin();
   //There are three signal compensation commands we can use: setTemperatureOffset; setSensorAltitude; and setAmbientPressure
 
   Serial.print(F("Temperature offset is currently: "));
-  Serial.println(mySensor.getTemperatureOffset(), 2); // Print the temperature offset with two decimal places
-  mySensor.setTemperatureOffset(10); // Set the temperature offset to 5C
-  Serial.print(F("Temperature offset is now: "));
-  Serial.println(mySensor.getTemperatureOffset(), 2); // Print the temperature offset with two decimal places
+  float to = mySensor.getTemperatureOffset();
+  Serial.println(to, 2); // Print the temperature offset with two decimal places
+      uploadSensorVal(TYPE_REF_OFFSET,UNIT_CELSIUS, 1, to);
+    
+  
+  
 
   Serial.print(F("Sensor altitude is currently: "));
-  Serial.println(mySensor.getSensorAltitude()); // Print the sensor altitude
-  mySensor.setSensorAltitude(40); // Set the sensor altitude to 1000m
-  Serial.print(F("Sensor altitude is now: "));
-  Serial.println(mySensor.getSensorAltitude()); // Print the sensor altitude
+  uint16_t alt = mySensor.getSensorAltitude();
+  Serial.println(alt); // Print the sensor altitude
+      uploadSensorVal(TYPE_REF_ALT,UNIT_METERS, 1, alt);
+      
  mySensor.persistSettings(); // Uncomment this line to store the sensor settings in EEPROM
-
+  uploadSensorVal(TYPE_SENSOR, UNIT_SENSOR, 1, "SCD41");
+  uploadSensorVal(TYPE_SENSOR, UNIT_SENSOR, 0, "DHT11");
   //Just for giggles, while the periodic measurements are stopped, let's read the sensor serial number
   char serialNumber[13]; // The serial number is 48-bits. We need 12 bytes plus one extra to store it as ASCII Hex
   if (mySensor.getSerialNumber(serialNumber) == true)
   {
     Serial.print(F("The sensor's serial number is: 0x"));
     Serial.println(serialNumber);
+    uploadSensorVal(TYPE_SERIAL, UNIT_SERIAL, 1, serialNumber);
   }
 
   //Finally, we need to restart periodic measurements
@@ -168,10 +360,6 @@ Wire.begin();
   display.display();
 
   Serial.println("IO test");
-
-  pinMode(BUTTON_A, INPUT_PULLUP);
-  pinMode(BUTTON_B, INPUT_PULLUP);
-  pinMode(BUTTON_C, INPUT_PULLUP);
 
   // text display tests
   display.setTextSize(1);
@@ -210,27 +398,36 @@ void renderDisplay(float tl, int tr, float main) {
   display.print(F("C"));
   display.display();
 }
+
+
 void readSCD41() { 
    if (mySensor.readMeasurement()) // readMeasurement will return true when fresh data is available
   {
-    renderDisplay(mySensor.getHumidity(), mySensor.getCO2(), mySensor.getTemperature());
-    Serial.println();
+    float h = mySensor.getHumidity();
+    uint16_t c = mySensor.getCO2();
+    float t = mySensor.getTemperature();
+    renderDisplay(h, c, t);
+    yield();
+    uploadSensorVal(TYPE_TEMP,UNIT_CELSIUS, 1, t);
+    uploadSensorVal(TYPE_HUMID,UNIT_PERCENT, 1, h);
+    uploadSensorVal(TYPE_CO2,UNIT_PPM, 1, c);
 
     Serial.print(F("CO2(ppm):"));
-    Serial.print(mySensor.getCO2());
+    Serial.print(c);
 
     Serial.print(F("\tTemperature(C):"));
-    Serial.print(mySensor.getTemperature(), 1);
+    Serial.print(t, 1);
 
     Serial.print(F("\tHumidity(%RH):"));
-    Serial.print(mySensor.getHumidity(), 1);
+    Serial.print(h, 1);
     Serial.println();
   }
 }
 bool doReadDHT11(int temp, int hum) { 
-  uploadSensorVal(0,1.0);
+  uploadSensorVal(TYPE_TEMP,UNIT_CELSIUS, 0, temp);
         Serial.print("Temperature: ");
         Serial.print(temp);
+        uploadSensorVal(TYPE_HUMID,UNIT_PERCENT, 0, hum);
         Serial.print(" °C\tHumidity: ");
         Serial.print(hum);
         Serial.println(" %");
@@ -255,45 +452,8 @@ void loop() {
   timer.tick(); 
 
 }
-void uploadSensorVal(int type, float val) { 
-    // Use WiFiClient class to create TCP connections
-    WiFiClient client;
+ 
 
-    if (!client.connect(MDNS.IP(0), MDNS.port(0))) {
-        Serial.println("Connection failed.");     
-        return;
-    }
-    yield();
-    // This will send a request to the server
-    //uncomment this line to send an arbitrary string to the server
-    //client.print("Send this data to the server");
-    //uncomment this line to send a basic document request to the server
-    client.print("GET /log?type=1&val=20 HTTP/1.0\r\n\r\n");
-
-  int maxloops = 0;
-
-  //wait for the server's reply to become available
-  while (!client.available() && maxloops < 1000)
-  {
-    maxloops++;
-    delay(1); //delay 1 msec
-    yield();
-  }
-  if (client.available() > 0)
-  {
-    //read back one line from the server
-     String line = client.readStringUntil('\r');
-     yield();
-    Serial.println(line);
-  }
-  else
-  {
-    Serial.println("client.available() timed out ");
-  }
-
-    client.stop();
-
-}
 void listServices() { 
   Serial.print(services);
         Serial.println(" service(s) found");

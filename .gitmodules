@@ -1,0 +1,3 @@
+[submodule "liblongtail"]
+	path = liblongtail
+	url = git@github.com:LongTailz/liblongtail.git

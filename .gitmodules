@@ -1,3 +1,6 @@
 [submodule "liblongtail"]
 	path = liblongtail
 	url = git@github.com:LongTailz/liblongtail.git
+[submodule "blst"]
+	path = blst
+	url = git@github.com:supranational/blst.git

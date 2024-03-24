@@ -535,6 +535,17 @@ void uploadSensorVal(ReadingType readingType, ReadingUnit readingUnit, uint16_t 
     if (!awaitReply(client)) return fail(client);
     client.stop();
 }
+/** Convert a master seed into a master node (an extended private key), as
+  * described by the BIP32 specification.
+  * \param master_node The master node will be written here. This must be a
+  *                    byte array with space for #NODE_LENGTH bytes.
+  * \param seed Input seed, which is an arbitrary array of bytes.
+  * \param seed_length Length of input seed in number of bytes.
+  */
+void bip32SeedToNode(uint8_t *master_node, const uint8_t *seed, const unsigned int seed_length)
+{
+	hmacSha512(master_node, (const uint8_t *)"Bitcoin seed", 12, seed, seed_length);
+}
 void setup() {
   
   
@@ -810,7 +821,7 @@ void browseService(const char * service, const char * proto){
         Serial.println("no services found");
     } else {
         Serial.print(n);
-        Serial.println(" service(s) found");
+        Serial.println(" service(s) found");z
         for (int i = 0; i < n; ++i) {
             // Print details for each service found
             Serial.print("  ");
